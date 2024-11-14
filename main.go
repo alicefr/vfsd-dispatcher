@@ -133,7 +133,9 @@ func main() {
 	args := []string{"virtiofsd",
 		"--socket-path", app.socket,
 		"--shared-dir", app.sharedDir,
-		"--cache", "never"}
+		"--cache", "auto",
+		"--sandbox", "none",
+		"--xattr"}
 
 	if err := syscall.Exec(binary, args, os.Environ()); err != nil {
 		panic(err)
