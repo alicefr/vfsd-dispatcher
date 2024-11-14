@@ -136,6 +136,7 @@ func main() {
 		"--cache", "auto",
 		"--sandbox", "none",
 		"--xattr"}
+	log.DefaultLogger().Infof("Launch %v", args)
 
 	if err := syscall.Exec(binary, args, os.Environ()); err != nil {
 		panic(err)
