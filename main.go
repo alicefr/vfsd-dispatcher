@@ -1,17 +1,16 @@
 package main
 
 import (
-	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 
 	"syscall"
 
 	flag "github.com/spf13/pflag"
+	"golang.org/x/sys/unix"
 	"kubevirt.io/client-go/log"
 )
 
@@ -20,42 +19,6 @@ const (
 	cgroupProcs   = "cgroup.procs"
 	binary        = "/usr/libexec/virtiofsd"
 )
-
-func sys_setns() uintptr {
-	switch runtime.GOARCH {
-	case "amd64":
-		return 308
-	default:
-		panic("arch not recognized")
-	}
-}
-
-func sys_pidfd_open() uintptr {
-	switch runtime.GOARCH {
-	case "amd64":
-		return 434
-	default:
-		panic("arch not recognized")
-	}
-}
-
-func setns(fd int, nstype uintptr) error {
-	_, _, err := syscall.Syscall6(sys_setns(), uintptr(fd), nstype, 0, 0, 0, 0)
-	if err != 0 {
-		return fmt.Errorf("setns failed with errno: %s", err.Error())
-	}
-
-	return nil
-}
-
-func pidfd_open(pid int, flags uint) (int, error) {
-	fd, _, err := syscall.Syscall6(sys_pidfd_open(), uintptr(pid), uintptr(flags), 0, 0, 0, 0)
-	if err != 0 {
-		return -1, fmt.Errorf("pidfd_open failed with errno: %s", err.Error())
-	}
-
-	return int(fd), nil
-}
 
 func moveIntoCgroup(pid int) error {
 	content, err := ioutil.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cgroup"))
@@ -83,16 +46,15 @@ func moveIntoCgroup(pid int) error {
 
 func moveIntoProcNamespaces(pid int) error {
 	log.DefaultLogger().Infof("Move the process into same namespaces as %d", pid)
-	fd, err := pidfd_open(pid, 0)
+	fd, err := unix.PidfdOpen(pid, 0)
 	if err != nil {
 		return err
 	}
-	if err := setns(fd, syscall.CLONE_NEWNET|
-		syscall.CLONE_NEWPID|
-		syscall.CLONE_NEWIPC|
-		syscall.CLONE_NEWNS|
-		syscall.CLONE_NEWCGROUP|
-		syscall.CLONE_NEWUTS); err != nil {
+	if err := unix.Setns(fd, unix.CLONE_NEWNET|
+		unix.CLONE_NEWIPC|
+		unix.CLONE_NEWNS|
+		unix.CLONE_NEWCGROUP|
+		unix.CLONE_NEWUTS); err != nil {
 		return err
 	}
 
