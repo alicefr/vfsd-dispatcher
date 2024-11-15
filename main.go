@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -18,7 +19,7 @@ import (
 const (
 	cgroupSysPath = "/sys/fs/cgroup"
 	cgroupProcs   = "cgroup.procs"
-	binary        = "/usr/libexec/virtiofsd"
+	vfsdBin       = "/usr/libexec/virtiofsd"
 )
 
 func moveIntoCgroup(pid int) error {
@@ -94,12 +95,27 @@ func main() {
 		panic(err)
 	}
 
-	cmd := exec.Command("/usr/libexec/virtiofsd",
+	cmd := exec.Command(vfsdBin,
 		"--socket-path", app.socket,
 		"--shared-dir", app.sharedDir,
 		"--cache", "auto",
 		"--sandbox", "none",
 		"--xattr")
+
+	// Redirect command output to the stdout and stderr of the container
+	var fout, ferr io.Writer
+	var err error
+	fout, err = os.OpenFile("/proc/1/fd/1", os.O_RDWR|os.O_APPEND, 0600)
+	if err != nil {
+		panic(err)
+	}
+	ferr, err = os.OpenFile("/proc/1/fd/2", os.O_RDWR|os.O_APPEND, 0600)
+	if err != nil {
+		panic(err)
+	}
+	cmd.Stderr = fout
+	cmd.Stdout = ferr
+
 	if err := cmd.Start(); err != nil {
 		panic(err)
 	}
