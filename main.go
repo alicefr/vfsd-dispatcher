@@ -3,6 +3,7 @@ package main
 import (
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -51,6 +52,7 @@ func moveIntoProcNamespaces(pid int) error {
 		return err
 	}
 	if err := unix.Setns(fd, unix.CLONE_NEWNET|
+		unix.CLONE_NEWPID|
 		unix.CLONE_NEWIPC|
 		unix.CLONE_NEWNS|
 		unix.CLONE_NEWCGROUP|
@@ -92,15 +94,13 @@ func main() {
 		panic(err)
 	}
 
-	args := []string{"virtiofsd",
+	cmd := exec.Command("/usr/libexec/virtiofsd",
 		"--socket-path", app.socket,
 		"--shared-dir", app.sharedDir,
 		"--cache", "auto",
 		"--sandbox", "none",
-		"--xattr"}
-	log.DefaultLogger().Infof("Launch %v", args)
-
-	if err := syscall.Exec(binary, args, os.Environ()); err != nil {
+		"--xattr")
+	if err := cmd.Start(); err != nil {
 		panic(err)
 	}
 }
