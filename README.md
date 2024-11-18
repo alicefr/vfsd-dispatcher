@@ -1,13 +1,13 @@
 # Dispatcher to launch virtiofsd in a container
 
-## Build test container
+## Build binaries and container
 ```bash
-$  podman build -t test .
+$  make all
 ```
 
 ## Run test container
 ```bash
-$ podman run -v test:/test -td --name test test
+$ podman run -v test:/test -td --name test virtiofs-placeholder
 ```
 
 ## Launch virtiofs
