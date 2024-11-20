@@ -7,11 +7,15 @@ $  make all
 
 ## Run test container
 ```bash
-$ podman run -v test:/test -td --name test virtiofs-placeholder
+$ mkdir -p /tmp/test
+$ podman run -v test:/test -td --name test \
+    --security-opt label:disable \
+    -v /tmp/test:/var/run/vfsd:Z \
+    virtiofs-placeholder --socket-path /var/run/vfsd/placeholder.sock
 ```
 
 ## Launch virtiofs
 ```bash
-$ pid=$(podman inspect test   -f '{{ .State.Pid }}')
-$ sudo ./vfsd-dispatcher --pid $pid --socket-path /var/run/vsfd.sock --shared-dir /test
+$ sudo ./vfsd-dispatcher --cont-socket /tmp/test/placeholder.sock --cont-socket /tmp/test/placeholder.sock \
+    --socket-path /var/run/vsfd.sock --shared-dir /test
 ```

@@ -1,13 +1,16 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"io/ioutil"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"syscall"
 
@@ -20,6 +23,7 @@ const (
 	cgroupSysPath = "/sys/fs/cgroup"
 	cgroupProcs   = "cgroup.procs"
 	vfsdBin       = "/usr/libexec/virtiofsd"
+	timeout       = 5
 )
 
 func moveIntoCgroup(pid int) error {
@@ -64,34 +68,66 @@ func moveIntoProcNamespaces(pid int) error {
 	return nil
 }
 
+func getPid(socket string) (int, error) {
+	sock, err := net.DialTimeout("unix", socket, time.Duration(timeout)*time.Second)
+	if err != nil {
+		return -1, err
+	}
+	defer sock.Close()
+
+	ufile, err := sock.(*net.UnixConn).File()
+	if err != nil {
+		return -1, err
+	}
+	defer ufile.Close()
+
+	// This is the tricky part, which will give us the PID of the owning socket
+	ucreds, err := syscall.GetsockoptUcred(int(ufile.Fd()), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
+	if err != nil {
+		return -1, err
+	}
+
+	if int(ucreds.Pid) == 0 {
+		return -1, fmt.Errorf("the detected PID is 0. Is the isolation detector running in the host PID namespace?")
+	}
+
+	return int(ucreds.Pid), nil
+}
+
 type appDisaptcher struct {
-	pid       int
-	socket    string
-	sharedDir string
+	socket     string
+	sharedDir  string
+	contSocket string
 }
 
 func main() {
 	var app appDisaptcher
 
-	flag.IntVar(&app.pid, "pid", 0, "Pid of the container where to dispatch virtiofs")
 	flag.StringVar(&app.socket, "socket-path", "", "Path for the virtiofs socket")
 	flag.StringVar(&app.sharedDir, "shared-dir", "", "Shared directory for virtiofs")
+	flag.StringVar(&app.contSocket, "cont-socket", "", "Path for the container socket")
+
 	flag.Parse()
 
-	if app.pid < 0 {
-		panic("invalid pid")
-	}
 	if app.socket == "" {
 		panic("socket path is empty")
 	}
 	if app.sharedDir == "" {
 		panic("shared directory is empty")
 	}
+	if app.contSocket == "" {
+		panic("the path for the container socket empty")
+	}
 
-	if err := moveIntoCgroup(app.pid); err != nil {
+	pid, err := getPid(app.contSocket)
+	if err != nil {
 		panic(err)
 	}
-	if err := moveIntoProcNamespaces(app.pid); err != nil {
+
+	if err := moveIntoCgroup(pid); err != nil {
+		panic(err)
+	}
+	if err := moveIntoProcNamespaces(pid); err != nil {
 		panic(err)
 	}
 
@@ -100,11 +136,11 @@ func main() {
 		"--shared-dir", app.sharedDir,
 		"--cache", "auto",
 		"--sandbox", "none",
+		"--log-level", "debug",
 		"--xattr")
 
 	// Redirect command output to the stdout and stderr of the container
 	var fout, ferr io.Writer
-	var err error
 	fout, err = os.OpenFile("/proc/1/fd/1", os.O_RDWR|os.O_APPEND, 0600)
 	if err != nil {
 		panic(err)

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -9,10 +11,13 @@ import (
 
 	"kubevirt.io/client-go/log"
 
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
 )
 
-const virtiofsBin = "virtiofsd"
+const (
+	virtiofsBin = "virtiofsd"
+)
 
 func findVirtiofsPidInProc() (int, error) {
 	files, err := os.ReadDir("/proc")
@@ -39,13 +44,12 @@ func findVirtiofsPidInProc() (int, error) {
 	return -1, fmt.Errorf("Not found")
 }
 
-func watchProcForVirtiofs() error {
-	log.DefaultLogger().Infof("Start monitoring proc")
+func startMonitorProcForVirtiofs(c chan int) error {
 	fd, err := unix.InotifyInit()
 	if err != nil {
-		return fmt.Errorf("inotify_init failed: %w", err)
+		fmt.Errorf("inotify_init failed: %w", err)
 	}
-	_, err = unix.InotifyAddWatch(fd, "/proc", unix.IN_CREATE|unix.IN_OPEN)
+	_, err = unix.InotifyAddWatch(fd, "/proc", unix.IN_CREATE|unix.IN_OPEN|unix.IN_ACCESS|unix.IN_MODIFY)
 	if err != nil {
 		return fmt.Errorf("inotify_add_watch failed: %w", err)
 	}
@@ -64,7 +68,6 @@ func watchProcForVirtiofs() error {
 	epollEvents := []unix.EpollEvent{{}}
 	for {
 		_, err = unix.EpollWait(efd, epollEvents, -1)
-		//if err != nil && !IsRestartError(err) {
 		if err != nil {
 			return fmt.Errorf("epoll_wait for proc monitoring failed: %w", err)
 		}
@@ -73,22 +76,55 @@ func watchProcForVirtiofs() error {
 			break
 		}
 	}
+	c <- pid
 
-	log.DefaultLogger().Infof("Started virtiofs with pid: %d", pid)
+	return nil
+}
 
-	efd, err = unix.EpollCreate1(0)
+func watchProcForVirtiofs(socket string) error {
+	logger := log.DefaultLogger()
+	c := make(chan int, 1)
+	var g errgroup.Group
+
+	g.Go(func() error {
+		return startMonitorProcForVirtiofs(c)
+	})
+	go startMonitorProcForVirtiofs(c)
+	logger.Infof("Start monitoring proc")
+
+	// Let the dispatcher connect to signal it got the pid of the current process
+	l, err := net.Listen("unix", socket)
+	if err != nil {
+		return err
+	}
+	conn, err := l.Accept()
+	if err != nil {
+		return err
+	}
+	conn.Close()
+	logger.Info("Dispatcher connected")
+
+	if err := g.Wait(); err != nil {
+		return err
+	}
+	pid := <-c
+
+	logger.Infof("Started virtiofs with pid: %d", pid)
+
+	efd, err := unix.EpollCreate1(0)
 	if err != nil {
 		return fmt.Errorf("epoll_create1 for for virtiofs monitoring failed: %w", err.Error())
 	}
 	// Monitor the virtiofs pid file descriptor.
-	fd, err = unix.PidfdOpen(pid, 0)
+	fd, err := unix.PidfdOpen(pid, 0)
 	if err != nil {
 		return err
 	}
-	e = unix.EpollEvent{
+	e := unix.EpollEvent{
 		Events: unix.EPOLLIN,
 		Fd:     int32(fd),
 	}
+	epollEvents := []unix.EpollEvent{{}}
 	if err := unix.EpollCtl(efd, unix.EPOLL_CTL_ADD, fd, &e); err != nil {
 		return fmt.Errorf("epoll_ctl for virtiofs monitoring failed: %w", err)
 	}
@@ -97,13 +133,26 @@ func watchProcForVirtiofs() error {
 		return fmt.Errorf("epoll_wait for virtiofs monitoring failed: %w", err)
 	}
 
-	log.DefaultLogger().Infof("Virtiofs process terminated")
+	logger.Infof("Virtiofs process terminated")
 
 	return nil
 }
 
 func main() {
-	err := watchProcForVirtiofs()
+	var socket string
+
+	flag.StringVar(&socket, "socket-path", "", "Path for the socket")
+	flag.Parse()
+
+	if socket == "" {
+		panic("The --socket-path needs to be set")
+	}
+
+	if _, err := os.Stat(socket); err == nil {
+		os.Remove(socket)
+	}
+
+	err := watchProcForVirtiofs(socket)
 	if err != nil {
 		panic(err)
 	}
