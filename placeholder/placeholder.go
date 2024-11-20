@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -19,37 +20,13 @@ const (
 	virtiofsBin = "virtiofsd"
 )
 
-func findVirtiofsPidInProc() (int, error) {
-	files, err := os.ReadDir("/proc")
-	if err != nil {
-		return -1, err
-	}
-
-	for _, file := range files {
-		name := file.Name()
-		n, err := strconv.Atoi(name)
-		// Not a number
-		if err != nil {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join("/proc", name, "cmdline"))
-		if err != nil {
-			continue
-		}
-		if strings.Contains(string(data), virtiofsBin) {
-			return n, nil
-		}
-	}
-
-	return -1, fmt.Errorf("Not found")
-}
-
-func startMonitorProcForVirtiofs(c chan int) error {
+func startMonitorProcForVirtiofs(c chan int, pidfile string) error {
+	dir := filepath.Dir(pidfile)
 	fd, err := unix.InotifyInit()
 	if err != nil {
 		fmt.Errorf("inotify_init failed: %w", err)
 	}
-	_, err = unix.InotifyAddWatch(fd, "/proc", unix.IN_CREATE|unix.IN_OPEN|unix.IN_ACCESS|unix.IN_MODIFY)
+	_, err = unix.InotifyAddWatch(fd, dir, unix.IN_CREATE|unix.IN_OPEN|unix.IN_ACCESS|unix.IN_MODIFY)
 	if err != nil {
 		return fmt.Errorf("inotify_add_watch failed: %w", err)
 	}
@@ -64,32 +41,41 @@ func startMonitorProcForVirtiofs(c chan int) error {
 	if err := unix.EpollCtl(efd, unix.EPOLL_CTL_ADD, fd, &e); err != nil {
 		return fmt.Errorf("epoll_ctl for proc monitoring failed: %w", err)
 	}
-	var pid int
 	epollEvents := []unix.EpollEvent{{}}
 	for {
 		_, err = unix.EpollWait(efd, epollEvents, -1)
 		if err != nil {
 			return fmt.Errorf("epoll_wait for proc monitoring failed: %w", err)
 		}
-		pid, err = findVirtiofsPidInProc()
-		if err == nil {
-			break
+		_, err := os.Stat(pidfile)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return err
 		}
+		data, err := os.ReadFile(pidfile)
+		if err != nil {
+			return err
+		}
+		pid, err := strconv.Atoi(strings.Trim(string(data), "\n"))
+		if err != nil {
+			return err
+		}
+		c <- pid
+		break
 	}
-	c <- pid
 
 	return nil
 }
 
-func watchProcForVirtiofs(socket string) error {
+func watchProcForVirtiofs(socket, pidfile string) error {
 	logger := log.DefaultLogger()
 	c := make(chan int, 1)
 	var g errgroup.Group
 
 	g.Go(func() error {
-		return startMonitorProcForVirtiofs(c)
+		return startMonitorProcForVirtiofs(c, pidfile)
 	})
-	go startMonitorProcForVirtiofs(c)
 	logger.Infof("Start monitoring proc")
 
 	// Let the dispatcher connect to signal it got the pid of the current process
@@ -140,19 +126,24 @@ func watchProcForVirtiofs(socket string) error {
 
 func main() {
 	var socket string
+	var pidfile string
 
 	flag.StringVar(&socket, "socket-path", "", "Path for the socket")
+	flag.StringVar(&pidfile, "pidfile", "", "Path for virtiofs")
 	flag.Parse()
 
 	if socket == "" {
 		panic("The --socket-path needs to be set")
+	}
+	if pidfile == "" {
+		panic("The --pidfile needs to be set")
 	}
 
 	if _, err := os.Stat(socket); err == nil {
 		os.Remove(socket)
 	}
 
-	err := watchProcForVirtiofs(socket)
+	err := watchProcForVirtiofs(socket, pidfile)
 	if err != nil {
 		panic(err)
 	}
