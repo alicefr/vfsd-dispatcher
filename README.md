@@ -10,7 +10,7 @@ $  make all
 $ mkdir -p /tmp/test
 $ podman run -v test:/test -td --name test \
     -v /tmp/test:/var/run/vfsd:Z \
-    virtiofs-placeholder --socket-path /var/run/vfsd/placeholder.sock --pidfile /var/run/vfsd.sock.pid
+    virtiofs-placeholder --socket-path /var/run/vfsd/placeholder.sock
 ```
 
 ## Launch virtiofs
