@@ -134,12 +134,10 @@ int monitor(int socket_fd, int sig_fd) {
 		if (ret < 0) goto err;
 
 		if (epoll_events.data.fd == sig_fd) {
-			printf("XXX get event for the signal\n");
 			struct signalfd_siginfo sfdi;
 			int len = read(epoll_events.data.fd, &sfdi, sizeof(sfdi));
 			if (len == sizeof(sfdi)) break;
 		} else if (epoll_events.data.fd == socket_fd) {
-			printf("XXX get event for the connection\n");
 			int accept_fd = accept(socket_fd, NULL, NULL);
 			if (accept_fd < 0) goto err;
 
@@ -148,7 +146,6 @@ int monitor(int socket_fd, int sig_fd) {
 			// Ignore the error, If epoll_ctl fails we will just leak the accept_fd
 			epoll_ctl(efd, EPOLL_CTL_ADD, accept_fd, &acceptfd_event);
 		} else if (epoll_events.events & EPOLLRDHUP) {
-			printf("XXX close the connection\n");
 			// An event from the accepted connection, the other side closed the connection
 			close(epoll_events.data.fd);
 		}
