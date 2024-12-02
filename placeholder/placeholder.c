@@ -1,36 +1,33 @@
+#include <errno.h>
 #include <getopt.h>
-#include <string.h>
+#include <limits.h>
+#include <signal.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdbool.h>
-#include <unistd.h>
-#include <time.h>
-#include <pthread.h>
-#include <errno.h>
-#include <limits.h>
-#include <sys/inotify.h>
+#include <string.h>
 #include <sys/epoll.h>
-#include <sys/syscall.h>
-#include <unistd.h>
+#include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <time.h>
+#include <unistd.h>
 
 struct arguments {
-	char pidfile[PATH_MAX];
 	char socket[PATH_MAX];
 };
 
+struct arguments args;
+
 static struct option long_options[] = {
     {"socket-path", required_argument, 0, 'c'},
-    {"pidfile", required_argument, 0, 'p'},
     {0, 0, 0, 0}
 };
 
 static void usage() {
 	printf("Placeholder for virtiofs\n"
 	       "Usage:\n"
-	       "\t-p, --pidfile:\tPid of process to monitor\n"
 	       "\t-s, --socket:\tContainer socket path to retrieve the pid\n");
 	exit(EXIT_FAILURE);
 }
@@ -51,9 +48,6 @@ void parse_arguments(int argc, char **argv, struct arguments *args) {
             case 'c':
                 strncpy(args->socket, optarg, strlen(optarg));
                 break;
-            case 'p':
-		strncpy(args->pidfile, optarg, strlen(optarg));
-		break;
             case '?':
             default:
                 usage();
@@ -62,18 +56,12 @@ void parse_arguments(int argc, char **argv, struct arguments *args) {
     }
 }
 
-void dir(char * path, char *dst){
-	char t[PATH_MAX];
-        char *last;
-	char *p = t;
-
-	strncpy(t, path, strlen(path));
-        p = strtok(p, "/");
-        while(p != NULL){
-                last = p;
-                p = strtok(NULL, "/");
-        }
-	strncpy(dst, path, strlen(path) - strlen(last) - 1);
+void sig_handler(int signo) {
+	if (strcmp(args.socket, "") != 0 ) {
+	    unlink(args.socket);
+	}
+	fprintf(stderr, "placeholder terminated\n");
+	exit(0);
 }
 
 void error_log(const char *format, ...)
@@ -89,127 +77,105 @@ void error_log(const char *format, ...)
     va_end(arglist);
 }
 
-void *start_monitor_proc_virtiofs(void *args) {
-	char *pidfile = (char *)args;
-	char d[PATH_MAX];
-        struct epoll_event epoll_events;
-        struct epoll_event event;
-	int efd, fd;
-
-	dir(pidfile, d);
-
-        if ((fd = inotify_init1(0)) < 0 ) {
-                error_log("inotify_init1 failed: %s",  strerror(errno));
-		pthread_exit(NULL);
+int get_signalfd(int signal) {
+	sigset_t sigset;
+	sigemptyset(&sigset);
+	sigaddset(&sigset, signal);
+	if (sigprocmask(SIG_BLOCK, &sigset, NULL) == -1) {
+		error_log("sigprocmask failed: %s", strerror(errno));
+		return -1;
 	}
-	if (inotify_add_watch(fd, d, IN_CREATE|IN_OPEN|IN_ACCESS|IN_MODIFY) < 0) {
-                error_log("inotify_add_watch failed: %s", strerror(errno));
-		pthread_exit(NULL);
-        }
-	if ((efd = epoll_create1(0)) < 0 ) {
-                error_log("epoll_create1 failed: %s", strerror(errno));
-        }
-	event.events = EPOLLIN;
-	event.data.fd = fd;
-
-        if (epoll_ctl(efd, EPOLL_CTL_ADD, fd, &event) != 0) {
-                error_log("epoll_ctl for monitoring the pidfile failed: %s", strerror(errno));
-		pthread_exit(NULL);
+	int fd = signalfd(-1, &sigset, SFD_NONBLOCK);
+	if (fd < 0) {
+	    error_log("signalfd failed: %s", strerror(errno));
 	}
-
-        while(true) {
-		if(epoll_wait(efd, &epoll_events, 1, -1) < 0) {
-			error_log("epoll_wait for monitoring the pidfile failed: %s", strerror(errno));
-			pthread_exit(NULL);
-		}
-		int ret = access(pidfile, F_OK);
-		if (ret < 0 && errno != ENOENT) {
-			error_log("failed to access the pidfile %s: %s", pidfile, strerror(errno));
-			pthread_exit(NULL);
-		}
-		if (ret == 0) {
-			char t[100];
-			FILE *f = fopen(pidfile, "r");
-			fgets(t, 100, f);
-			pid_t pid = (int) strtol(t, NULL, 10);
-			pthread_exit(&pid);
-		}
-        }
+	return fd;
 }
 
-int create_socket(char *path) {
+int create_socket(const char *path) {
 	int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-	struct sockaddr_un addr;
 
-	if (fd < 0) {
-		error_log("socket failed: %s", strerror(errno));
-		return -1;
-	}
+	if (fd < 0) goto err;
 
+	struct sockaddr_un addr = {};
 	addr.sun_family = AF_UNIX;
-        strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
-	if (bind(fd, (struct sockaddr *) &addr, sizeof(addr)) == -1) {
-		error_log("bind failed: %s", strerror(errno));
-		return -1;
+	strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+
+	if (bind(fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) goto err_close;
+
+	if (listen(fd, 1) < 0) goto err_close;
+
+	return fd;
+err_close:
+	close(fd);
+err:
+	error_log("create_socket failed: %s", strerror(errno));
+	return -1;
+}
+
+int monitor(int socket_fd, int sig_fd) {
+	int efd = epoll_create1(0);
+	if (efd < 0) goto err;
+
+	// Watch the socket
+	// Even if we expect just one connection, we cannot use EPOLLONESHOT, because the dispatcher
+	// could have died after connect() but before spawning virtiofsd, so we need to allow successive
+	// connections.
+	struct epoll_event socket_event = {.events = EPOLLIN, .data.fd = socket_fd};
+	if (epoll_ctl(efd, EPOLL_CTL_ADD, socket_fd, &socket_event) < 0) goto err;
+
+	struct epoll_event signal_event = {.events = EPOLLIN, .data.fd = sig_fd};
+	if (epoll_ctl(efd, EPOLL_CTL_ADD, sig_fd, &signal_event) < 0) goto err;
+
+	struct epoll_event epoll_events;
+	while (true) {
+		int ret = epoll_wait(efd, &epoll_events, 1, -1);
+		if (ret < 0 && errno == EINTR) continue;
+		if (ret < 0) goto err;
+
+		if (epoll_events.data.fd == sig_fd) {
+			struct signalfd_siginfo sfdi;
+			int len = read(epoll_events.data.fd, &sfdi, sizeof(sfdi));
+			if (len == sizeof(sfdi)) break;
+		} else if (epoll_events.data.fd == socket_fd) {
+			int accept_fd = accept(socket_fd, NULL, NULL);
+			if (accept_fd < 0) goto err;
+
+			// Get a notification if the socket is closed, to avoid leaking the FD
+			struct epoll_event acceptfd_event = {.events = EPOLLRDHUP | EPOLLONESHOT, .data.fd = accept_fd};
+			// Ignore the error, If epoll_ctl fails we will just leak the accept_fd
+			epoll_ctl(efd, EPOLL_CTL_ADD, accept_fd, &acceptfd_event);
+		} else if (epoll_events.events & EPOLLRDHUP) {
+			// An event from the accepted connection, the other side closed the connection
+			close(epoll_events.data.fd);
+		}
 	}
-	printf("listening at: %s\n", addr.sun_path);
-	if (listen(fd, 1) == -1) {
-		error_log("listen failed: %s", strerror(errno));
-		return -1;
-	}
-	if (accept(fd, NULL, NULL) < 0) {
-		error_log("accept failed: %s", strerror(errno));
-		return -1;
-	}
+
+	close(socket_fd);
+	close(sig_fd);
 
 	return 0;
+
+err:
+	error_log("monitor failed: %s", strerror(errno));
+	close(socket_fd);
+	close(sig_fd);
+
+	return -1;
 }
 
 int main(int argc, char **argv) {
-	struct arguments args;
-	pthread_t thread_id;
-	void* resp;
-	struct epoll_event epoll_events;
-	struct epoll_event event;
-	int efd, fd;
-	pid_t pid;
+	sigset_t sigset;
+	fprintf(stderr, "start monitoring for virtiofs\n");
 
 	parse_arguments(argc, argv, &args);
 
-	printf("start monitoring for virtiofs\n");
+	/* Block all signals */
+//	sigfillset(&sigset);
+//	sigprocmask(SIG_BLOCK, &sigset, NULL);
 
-	if (create_socket(args.socket) < 0)
-		exit(EXIT_FAILURE);
+	int sig_fd = get_signalfd(SIGCHLD);
+	int socket_fd = create_socket(args.socket);
 
-	pthread_create(&thread_id, NULL, start_monitor_proc_virtiofs, &args.pidfile);
-	pthread_join(thread_id, &resp);
-
-	pid = *(int *)resp;
-	printf("virtiofs started with pid %d\n", pid);
-	if (pid < 0) {
-		exit(EXIT_FAILURE);
-	}
-
-	if ((fd = syscall(SYS_pidfd_open, pid, 0)) < 0) {
-		error_log("pidfd_open failed: %s", strerror(errno));
-		exit(EXIT_FAILURE);
-	}
-
-	if ((efd = epoll_create1(0)) < 0 ) {
-                error_log("epoll_create1 for monitoring the pid process failed: %s", strerror(errno));
-		exit(EXIT_FAILURE);
-        }
-	event.events = EPOLLIN;
-	event.data.fd = fd;
-
-        if (epoll_ctl(efd, EPOLL_CTL_ADD, fd, &event) != 0) {
-                error_log("epoll_ctl for monitoring the pid process failed: %s", strerror(errno));
-	}
-
-	if(epoll_wait(efd, &epoll_events, 1, -1) < 0) {
-		error_log("epoll_wait for monitoring the pid process failed: %s", strerror(errno));
-		exit(EXIT_FAILURE);
-	}
-
-	printf("virtiofs process terminated\n");
+	return monitor(socket_fd, sig_fd);
 }
