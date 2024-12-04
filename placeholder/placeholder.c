@@ -35,11 +35,10 @@ static void usage() {
 }
 
 void parse_arguments(int argc, char **argv, struct arguments *args) {
-    int c;
     while(1) {
         /* getopt_long stores the option index here. */
         int option_index = 0;
-        c = getopt_long(argc, argv, "c:p:", long_options, &option_index);
+        int c = getopt_long(argc, argv, "c:p:", long_options, &option_index);
 
         /* Detect the end of the options. */
         if (c == -1) {
