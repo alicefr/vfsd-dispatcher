@@ -57,13 +57,18 @@ void parse_arguments(int argc, char **argv, struct arguments *args) {
     }
 }
 
+#define FMT_SZ 50
 void error_log(const char *format, ...)
 {
     va_list arglist;
 
     time_t ltime; /* calendar time */
     ltime=time(NULL); /* get current cal time */
-    fprintf(stderr, "%s",asctime(localtime(&ltime)));
+
+    char time_fmt[FMT_SZ] = {};
+    strftime(time_fmt, FMT_SZ, "%b %d %H:%M:%S ", localtime(&ltime));
+    fprintf(stderr, "%s", time_fmt);
+
     fprintf(stderr, "error: ");
     va_start(arglist, format);
     vfprintf(stderr, format, arglist);
