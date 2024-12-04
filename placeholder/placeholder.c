@@ -56,14 +56,6 @@ void parse_arguments(int argc, char **argv, struct arguments *args) {
     }
 }
 
-void sig_handler(int signo) {
-	if (strcmp(args.socket, "") != 0 ) {
-	    unlink(args.socket);
-	}
-	fprintf(stderr, "placeholder terminated\n");
-	exit(0);
-}
-
 void error_log(const char *format, ...)
 {
     va_list arglist;
