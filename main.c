@@ -29,7 +29,7 @@ static struct option long_options[] = {
 };
 
 static void usage() {
-        printf("Placeholder for virtiofs\n"
+        printf("virtiofsd dispatcher\n"
                "Usage:\n"
                "\t-p, --pid:\t\tPid of the container\n"
 	       "\t-d  --shared-dir\tShared directory flag for virtiofs\n"
