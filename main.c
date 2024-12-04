@@ -37,10 +37,9 @@ static void usage() {
 }
 
 void parse_arguments(int argc, char **argv, struct arguments *args) {
-    int c;
     while(1) {
         int option_index = 0;
-        c = getopt_long(argc, argv, "d:p:s:", long_options, &option_index);
+        int c = getopt_long(argc, argv, "d:p:s:", long_options, &option_index);
 
         if (c == -1) {
             break;
