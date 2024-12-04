@@ -90,7 +90,7 @@ int move_into_cgroup(pid_t pid)
 	FILE *fptr;
 	char str[20];
 
-	snprintf(path, PATH_MAX, "/proc/%d/cgroup", pid);
+	snprintf(path, PATH_MAX - 30, "/proc/%d/cgroup", pid);
 	fptr = fopen(path, "r");
 	if (fptr == NULL) goto err;
 	fgets(path, sizeof(path), fptr);
