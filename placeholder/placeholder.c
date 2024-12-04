@@ -1,4 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
+/*
+ * virtiofsd placeholder
+ *
+ * The purpose of this command is to function as PID 1 inside the container having
+ * the same lifetime as virtiofsd.
+ *
+ * The dispatcher will get the PID of this command by connecting to the socket,
+ * and will run a privileged virtiofsd on the same namespaces and cgroup as this command.
+ *
+ * Since virtiofsd will be re-parented as a child of this command, it should terminate
+ * when it receives the SIGCHLD signal indicating that virtiofsd is finished.
+ */
 
 #include <errno.h>
 #include <getopt.h>
@@ -132,9 +144,11 @@ int monitor(int socket_fd, int sig_fd) {
 		if (ret < 0) goto err;
 
 		if (epoll_events.data.fd == sig_fd) {
+            // We received a SIGCHLD if virtiofsd exited, we must exit too
 			struct signalfd_siginfo sfdi;
 			int len = read(epoll_events.data.fd, &sfdi, sizeof(sfdi));
-			if (len == sizeof(sfdi)) break;
+            // let's assume that only virtiofsd will run with privileges (i.e., uid == 0)
+			if (len == sizeof(sfdi) && sfdi.ssi_uid == 0) break;
 		} else if (epoll_events.data.fd == socket_fd) {
 			int accept_fd = accept(socket_fd, NULL, NULL);
 			if (accept_fd < 0) goto err;
