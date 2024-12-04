@@ -138,7 +138,17 @@ int main(int argc, char **argv)
 	if(move_into_namespaces(args.pid) < 0 )
 		exit(EXIT_FAILURE);
 
-	// Fork is to create a process in the pid namesace
+    /*
+     The PID namespace is special in the sense that a fork() is
+     required after calling setns() to actually enter the PID NS.
+
+     Since we want to re-parent virtiofsd to be a child of the
+     PID 1 inside the container, we really need to fork() twice (see
+     daemon()), because when a child process becomes orphaned, it is
+     re-parented to the "init" process in the PID NS of its _parent_,
+     so make sure the virtiofsd's parent process is already inside the
+     PId NS.
+     */
 	pid_t child =  fork();
 	if (child < 0)
 		exit(EXIT_FAILURE);
