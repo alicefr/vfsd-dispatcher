@@ -157,14 +157,9 @@ err:
 }
 
 int main(int argc, char **argv) {
-	sigset_t sigset;
 	fprintf(stderr, "start monitoring for virtiofs\n");
 
 	parse_arguments(argc, argv, &args);
-
-	/* Block all signals */
-//	sigfillset(&sigset);
-//	sigprocmask(SIG_BLOCK, &sigset, NULL);
 
 	int sig_fd = get_signalfd(SIGCHLD);
 	int socket_fd = create_socket(args.socket);
